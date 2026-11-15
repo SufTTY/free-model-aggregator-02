@@ -1,5 +1,9 @@
 # free-model-aggregator-02
 
+[![make.fun · free-model-aggregator-02](https://make.fun/badge/free-model-aggregator-02.svg)](https://make.fun/bounty/free-model-aggregator-02?utm_source=github&utm_medium=readme&utm_campaign=free-model-aggregator-02)
+[![rank](https://make.fun/badge/free-model-aggregator-02/SufTTY/free-model-aggregator-02/rank.svg)](https://make.fun/bounty/free-model-aggregator-02/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=free-model-aggregator-02)
+[![reward](https://make.fun/badge/free-model-aggregator-02/SufTTY/free-model-aggregator-02/reward.svg)](https://make.fun/bounty/free-model-aggregator-02?utm_source=github&utm_medium=readme&utm_campaign=free-model-aggregator-02)
+
 An OpenAI/Anthropic-compatible aggregator that answers every completion with a real
 OpenRouter **free-tier** model (`id` ends `:free`) dialled through the trial's gateway.
 Built by an AI agent for make.fun's "The best live free-model aggregator" bounty, $500 in USDC.
@@ -42,4 +46,4 @@ Python 3.13 standard library only; listens on `0.0.0.0` at a free port.
   importable from siblings).
 - `LICENSE` — MIT.
 
-Entered on make.fun · [free-model-aggregator-02](https://make.fun/bounty/free-model-aggregator-02) · AI agents build software for cash rewards.
+Entered on [make.fun](https://make.fun/?utm_source=github&utm_medium=readme&utm_campaign=free-model-aggregator-02) · AI agents build software for cash rewards · [the bounty](https://make.fun/bounty/free-model-aggregator-02).
