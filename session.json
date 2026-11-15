@@ -1,0 +1,47 @@
+{
+  "harness": "Hermes Agent",
+  "model": "auto",
+  "handed_over": "Hermes desktop agent keeps no session file on disk that the kit's bundle can read; this is the build record handed over from what the agent can see.",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Build and submit a make.fun entry for free-model-aggregator-02: a live free-model aggregator using OpenRouter free models through the trial gateway. Read AGENT-BRIEF.md and the requirements, build in /root/makefun/bots/free-model-aggregator-02, push to github.com/SufTTY/free-model-aggregator-02, submit with repo_url + commit_sha + transcript bundle. HARD RULE from the user: only OpenRouter :free (free-tier) models may ever be called; paid models are forbidden."
+    },
+    {
+      "role": "assistant",
+      "content": "Read the brief and the full requirements JSON (/tmp/req-fma02.json). Key facts extracted: entry = one self-contained server (Python 3.13 stdlib or Node 22) answering POST /v1/chat/completions, POST /v1/messages, GET /v1/models on both auth shapes, registering {protocol_version, port, catalog} with the env, polling GET /work, exiting 0 when done, printing the catalog with --list; catalog must hold exactly the 14 free ids from the brief; scoring = quality 60 (model rating served / best for the prompt), served 15, wire 10, failover 10, catalog 5, tie-break fewest gateway calls; deliverables repo_url + commit_sha + transcript bundle, submit via kit CLI; entry fee null; handed_over_places \"none\" noted for the harness record."
+    },
+    {
+      "role": "assistant",
+      "content": "Investigated the pushed OPENROUTER_API_KEY (stored at /root/.makefun/openrouter-key, never printed). `makefun secrets ls free-model-aggregator-02` showed the key active with a warning \"listing none of the allowed models\". Live check: GET https://openrouter.ai/api/v1/models with the key returned HTTP 200; the brief's 14 ids are absent with the `openrouter/` prefix but the same ids exist WITHOUT the prefix (12 of 14 currently live). A real chat completion to inclusionai/ling-3.2-flash:free returned 200 with content. Conclusion: the warning is cosmetic (the validator compares unprefixed live ids against the prefixed allowlist openrouter/*:free); the key is valid and free models are dialable."
+    },
+    {
+      "role": "assistant",
+      "content": "Set up the repo /root/makefun/bots/free-model-aggregator-02 (git init, MIT LICENSE from the kit starter). Read the whole starter python/main.py (1238 lines) and the practice brief (14 models with ratings; 6 prompts: p01 openai json, p02 openai stream, p03 anthropic stream, p04 openai json, p05 anthropic tools, p06 anthropic plain). Copied starter/python/main.py as main.py to build on (the starter is the house baseline with deliberate TODO weaknesses)."
+    },
+    {
+      "role": "assistant",
+      "content": "Edited main.py (patch 1): replaced free_models() with a hard FREE-ONLY filter (provider == 'openrouter' AND id ends with ':free'), added REFUSED_MODELS cooldown set + FAILURE_TRAIL, note_refusal(), failure_trail_header(), and ranked_candidates() ranking free models by rating_milli descending (stable sort, brief order on ties) filtered by the prompt requirements."
+    },
+    {
+      "role": "assistant",
+      "content": "Edited main.py (patch 2-3): replaced route_for() with a wrapper over ranked_candidates(); added with_output_cap() defaulting max_tokens=1024 (the gateway refuses requests without an output cap); rewrote the chat()/messages() handlers into one serve() path: iterate ranked candidates, dial each through $OPENAI_BASE_URL/chat/completions, on 4xx/5xx (or unreachable) parse the error code, note_refusal(model), continue to the next candidate; the finally-served answer carries the trail header x-makefun-upstream-failures (max 8 rows, ≤8 KiB); a prompt nothing served answers 502 with the last refusal. Fixed a header-ordering bug (trail header must be sent after send_response: added trail_header() called inside send_json() and stream_headers())."
+    },
+    {
+      "role": "assistant",
+      "content": "Wrote README.md describing routing, failover/cooldowns, the free-only rule, and the deterministic replay-safe design (no wall clock)."
+    },
+    {
+      "role": "assistant",
+      "content": "Built a real end-to-end test (/tmp/testenv.py): a fake trial env (POST /register capture, GET /work, drives the six practice prompts one at a time with their real bodies from the kit's practice workload.json) plus a gateway proxy forwarding POST /chat/completions to the real OpenRouter API on the entrant's key, stripping the openrouter/ prefix, as the trial gateway does. First run: 4/6 served — the streaming rows 'failed' only because the test driver compared the token against un-assembled SSE; also thinkingmachines/inkling-2-small:free (top rated, 1475) returns HTTP 403 from OpenRouter ('only available on agentic harnesses'), and the entry's failover correctly recovered to nvidia/nemotron-3.5-super-vl:free (1303). Fixed the driver to reassemble SSE text and model fields."
+    },
+    {
+      "role": "assistant",
+      "content": "Second full test run: SERVED 6/6, EXIT 0. Verified: catalog --list prints exactly the 14 free ids, byte-identical document registered; GET /v1/models lists the same 14 ids on both auth headers (OpenAI and Anthropic shapes); p01/p04 JSON-mode prompts answered by nemotron-3.5-super-vl:free (best json-capable model); p02/p03 streaming (OpenAI SSE and Anthropic event sequence) carry the prompt tokens with the dialled model id on every chunk; p05 tools prompt served; inkling-2-small 403 recovered via failover with the trail row reported in x-makefun-upstream-failures. All calls were :free models only; no paid model was ever named."
+    },
+    {
+      "role": "assistant",
+      "content": "Committed: 4b869d267e289fc94d8f7a55d902c0e90e602359 'free-model-aggregator-02: best-rated free-model routing, failover with per-model cooldown, exact 14-id catalog, both client wires in JSON and SSE'. Next: write this session.json, bundle with the kit CLI, push to github.com/SufTTY/free-model-aggregator-02, verify the commit via the GitHub API, and submit with repo_url + commit_sha + bundle."
+    }
+  ]
+}
