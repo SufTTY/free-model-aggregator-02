@@ -703,9 +703,51 @@ def iter_frames(chunks):
 
 
 def openai_stream_with_model(chunks, model: str):
-    """A Chat Completions SSE stream as it came, frame by frame, every data payload's `model` the dialled id."""
+    """A Chat Completions SSE stream, frame by frame, every payload's `model` the dialled id.
+
+    A wire check requires exactly one finish chunk per stream: some providers emit the finish
+    reason again on the trailing usage chunk, so any finish_reason after the first is nulled
+    (the choice's other fields pass through, usage included).
+    """
+    finish_sent = [False]
     for frame in iter_frames(chunks):
-        yield frame_with_model(frame, model)
+        yield openai_stream_frame_normalised(frame, model, finish_sent)
+
+
+def openai_stream_frame_normalised(frame: str, model: str, finish_sent: list[bool]) -> str:
+    """One frame with `model` set and duplicate finish reasons removed, `finish_sent` the guard."""
+    lines: list[str] = []
+    changed = False
+    for line in frame.split('\n'):
+        trimmed = line.strip()
+        if not trimmed.startswith('data:'):
+            lines.append(line)
+            continue
+        payload = trimmed[5:].strip()
+        if payload == '' or payload == '[DONE]':
+            lines.append(line)
+            continue
+        try:
+            chunk = json.loads(payload)
+        except (json.JSONDecodeError, ValueError):
+            lines.append(line)
+            continue
+        if is_record(chunk):
+            chunk = {**chunk, 'model': model}
+            if finish_sent[0]:
+                choices = chunk.get('choices')
+                if isinstance(choices, list) and choices and is_record(choices[0]) and choices[0].get('finish_reason') is not None:
+                    choice = dict(choices[0])
+                    choice['finish_reason'] = None
+                    chunk['choices'] = [choice, *choices[1:]] if len(choices) > 1 else [choice]
+                    changed = True
+            elif isinstance(chunk.get('choices'), list) and chunk['choices'] and is_record(chunk['choices'][0]) and chunk['choices'][0].get('finish_reason') is not None:
+                finish_sent[0] = True
+            lines.append(f'data: {json.dumps(chunk, separators=(",", ":"), ensure_ascii=False)}')
+            changed = True
+        else:
+            lines.append(line)
+    return ('\n'.join(lines) + '\n\n') if changed else frame + ('\n\n' if frame.endswith('\n\n') else '\n\n')
 
 
 def anthropic_events_from_openai(chunks, model: str):
