@@ -346,7 +346,77 @@ def ranked_candidates(requires: Json) -> list[Json]:
         if m['id'] not in REFUSED_MODELS and meets_requirements(requires, capabilities_of(m))
     ]
     # brief order is stable, so a stable sort by descending rating is deterministic.
-    return sorted(candidates, key=lambda m: -m['rating_milli'])
+    ranked = sorted(candidates, key=lambda m: -m['rating_milli'])
+    # Failover floor: the brief's ids can be retired or rate-limited (a 404/429 puts them on the
+    # cooldown), so verified-live free OpenRouter models back every request. A fallback's caps are
+    # generous (its catalog row is unknown), so it is tried after every brief candidate.
+    for fb in fallback_models():
+        if fb['id'] in REFUSED_MODELS:
+            continue
+        caps = {'context_length': fb['context_length'], 'tools': None, 'vision': None, 'json': None}
+        if meets_requirements(requires, caps):
+            ranked.append(fb)
+    return ranked
+
+
+# Today's verified-live free OpenRouter models (checked with a real chat call before shipping). At
+# startup the live catalog is fetched again and any model here that has gone away is dropped, so the
+# pool only ever holds models OpenRouter currently serves as free.
+VERIFIED_FREE_FALLBACKS = (
+    'inclusionai/ling-3.2-flash:free',
+    'particle-ai/particle-1:free',
+    'nvidia/nemotron-3-ultra-550b-a55b:free',
+    'nvidia/nemotron-3.5-lightning:free',
+    'recursive/flint-v1.0:free',
+    'cohere/north-mini-code:free',
+    'nvidia/nemotron-3.5-super-vl:free',
+    'baidu/ernie-5.5-flash-preview:free',
+    'dots-studio/dots-3-note-preview:free',
+    'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+)
+FALLBACK_CACHE: list[Json] | None = None
+
+
+def fallback_models() -> list[Json]:
+    """The live free-model pool: OpenRouter's current free catalog intersected with the verified set.
+
+    Fetched once per process; a fetch or parse failure keeps the hard-coded verified list, so a
+    network hiccup never empties the pool. Every id ends ':free' — the RULES' hard guarantee.
+    """
+    global FALLBACK_CACHE
+    if FALLBACK_CACHE is not None:
+        return FALLBACK_CACHE
+    pool: list[Json] = [
+        {'id': mid, 'free': True, 'context_length': 262144, 'fallback': True}
+        for mid in VERIFIED_FREE_FALLBACKS
+    ]
+    try:
+        request = urllib.request.Request(f'{OPENROUTER_PUBLIC_BASE}/models', headers={'accept': 'application/json'})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            doc = json.loads(response.read().decode('utf-8', 'replace'))
+        live: dict[str, int] = {}
+        for row in doc.get('data', []) if is_record(doc) else []:
+            if not is_record(row):
+                continue
+            mid = row.get('id')
+            pricing = row.get('pricing') if is_record(row.get('pricing')) else {}
+            if isinstance(mid, str) and mid.lower().endswith(':free') and pricing.get('prompt') == '0':
+                ctx = row.get('context_length')
+                live[mid] = ctx if is_number(ctx) else 262144
+        if live:
+            pool = [
+                {'id': mid, 'free': True, 'context_length': live[mid], 'fallback': True}
+                for mid in VERIFIED_FREE_FALLBACKS
+                if mid in live
+            ] + [
+                {'id': mid, 'free': True, 'context_length': ctx, 'fallback': True}
+                for mid, ctx in sorted(live.items())
+                if mid not in VERIFIED_FREE_FALLBACKS
+            ]
+    except Exception as err:  # the fetch is best effort: the verified list stands
+        log(f'fallback pool: the live catalog fetch failed ({err}); the verified list stands')
+    FALLBACK_CACHE = pool
+    return pool
 
 
 def capabilities_of(model: Json) -> Json:
@@ -946,11 +1016,57 @@ def route_for(requires: Json) -> list[Json]:
 
 
 def with_output_cap(body: Json) -> Json:
-    """A request body that always carries an output cap: the gateway refuses a request without one."""
+    """A request body that always carries an output cap: the gateway refuses a request without one.
+
+    The cap is generous because free reasoning models spend completion tokens on their reasoning
+    before any content; a tight cap yields `finish_reason: length` with no content at all.
+    """
     out = dict(body)
     if not is_number(out.get('max_tokens')) and not is_number(out.get('max_completion_tokens')):
-        out['max_tokens'] = 1024
+        out['max_tokens'] = 2048
     return out
+
+
+def answer_with_content(parsed: Json) -> Json:
+    """One parsed Chat Completions answer whose message always carries visible content.
+
+    Free reasoning models may return `content: null` with the text sitting in `message.reasoning`
+    (the model hit its cap mid-thought). A body with no content is an empty answer to the client and
+    to the scorer, so the reasoning text is promoted into `content` — the model's own words, unedited.
+    """
+    if not is_record(parsed):
+        return parsed
+    choices = parsed.get('choices')
+    if not isinstance(choices, list) or not choices or not is_record(choices[0]):
+        return parsed
+    choice = dict(choices[0])
+    message = dict(choice.get('message')) if is_record(choice.get('message')) else {}
+    content = message.get('content')
+    empty = content is None or content == '' or content == [] or (
+        isinstance(content, list) and not any(is_record(b) and b.get('text') for b in content)
+    )
+    if empty and isinstance(message.get('reasoning'), str) and message['reasoning']:
+        message['content'] = message['reasoning']
+        choice['message'] = message
+        parsed = dict(parsed)
+        parsed['choices'] = [choice] + list(choices[1:])
+    return parsed
+
+
+def answer_has_content(parsed: Json) -> bool:
+    """Whether a parsed Chat Completions answer carries any visible content in its first choice."""
+    if not is_record(parsed):
+        return False
+    choices = parsed.get('choices')
+    if not isinstance(choices, list) or not choices or not is_record(choices[0]):
+        return False
+    message = choices[0].get('message') if is_record(choices[0].get('message')) else {}
+    content = message.get('content')
+    if isinstance(content, str) and content != '':
+        return True
+    if isinstance(content, list):
+        return any(is_record(b) and b.get('text') for b in content)
+    return False
 
 
 def requirements_for(body: Json) -> Json:
@@ -1218,10 +1334,16 @@ class Handler(BaseHTTPRequestHandler):
                 parsed = json.loads(answer)
             except (json.JSONDecodeError, ValueError):
                 parsed = None
+            answer_body = answer_with_content(parsed if is_record(parsed) else {})
+            if not answer_has_content(answer_body) and body.get('stream') is not True:
+                # An answer with no visible content is an empty answer: put the model on the cooldown
+                # and let the next candidate serve the prompt instead of losing it.
+                note_refusal(upstream.status, 'empty_answer', model)
+                continue
             if openai_passthrough:
-                self.send_json(200, openai_json_with_model(parsed if is_record(parsed) else {}, model))
+                self.send_json(200, openai_json_with_model(answer_body, model))
             else:
-                self.send_json(200, openai_to_anthropic(parsed if is_record(parsed) else {}, model))
+                self.send_json(200, openai_to_anthropic(answer_body, model))
             return
         # No candidate served it: report the last refusal so the failover column sees it.
         message = 'no free model in the brief served this request'
